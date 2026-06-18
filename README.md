@@ -12,6 +12,60 @@ Architecture
 
 *The diagram shows the layered architecture with request flow from client through validation, idempotency checking, concurrent request coalescing, to payment processing and response caching.*
 
+Request FLow
+
+```mermaid
+flowchart TD
+    Start(["Client: POST /process-payment"]) --> JSON{"Valid JSON body?"}
+    JSON -- No --> E1["400 - Validation failed"]
+    JSON -- Yes --> Schema{"Body valid?<br/>amount + currency"}
+    Schema -- No --> E2["400 - Validation failed"]
+    Schema -- Yes --> KeyPresent{"Idempotency-Key header present?"}
+    KeyPresent -- No --> E3["400 - Missing idempotency key"]
+    KeyPresent -- Yes --> KeyValid{"Key is a valid UUID?"}
+    KeyValid -- No --> E4["400 - Invalid key format"]
+    KeyValid -- Yes --> Build["Build composite key<br/>method:path:key<br/>+ hash request body"]
+    Build --> Exists{"Record exists in store?"}
+
+    Exists -- No --> New["Store record + mark in-flight"]
+    New --> Process["Process payment ~2s"]
+    Process --> Cache["Cache response + release waiters"]
+    Cache --> OK["200 - Charged 100 GHS"]
+
+    Exists -- Yes --> SameHash{"Same request hash?"}
+    SameHash -- No --> E422["422 - Key already used for a different body"]
+    SameHash -- Yes --> Cached{"Response already cached?"}
+    Cached -- Yes --> Replay["200 - replayed, X-Cache-Hit: true"]
+    Cached -- No --> Wait["Wait for in-flight request"]
+    Wait --> Done{"Completed with a response?"}
+    Done -- Yes --> Replay
+    Done -- No --> E500["500 - Could not be replayed"]
+```
+
+In-flight Coalescing (Sequence)
+
+```mermaid
+sequenceDiagram
+    participant A as Request A
+    participant GW as Gateway
+    participant S as Store
+    participant B as Request B
+
+    A->>GW: POST /process-payment (Key K)
+    GW->>S: get(K) -> not found
+    GW->>S: set(K, pending) + begin(K)
+    Note over GW: processing ~2s
+    B->>GW: POST /process-payment (Key K, same body)
+    GW->>S: get(K) -> pending, no response yet
+    GW->>S: wait(K)
+    Note over B: blocked until A finishes
+    GW->>S: set(K, response) + complete(K)
+    GW-->>A: 200 Charged 100 GHS
+    S-->>B: wait resolves
+    GW->>S: get(K) -> response
+    GW-->>B: 200 replayed (X-Cache-Hit: true)
+```
+
 Key Components
 
 - **Flask Application** - Main application entry point that registers routes and documentation
