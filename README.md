@@ -1,18 +1,39 @@
-Idempotency Gateway - Payment Processing API
+# Idempotency Gateway — Payment Processing API
 
 A production-ready idempotency gateway that prevents duplicate payment processing through request deduplication, validation, and concurrent request coalescing.
 
-Overview
+## Live Deployment
+
+- Service: https://idempotency-gateway-ngh6.onrender.com
+- Health check: https://idempotency-gateway-ngh6.onrender.com/health
+- Interactive Swagger Docs: https://idempotency-gateway-ngh6.onrender.com/docs
+
+> *Hosted on Render's free tier; the first request after inactivity may take ~30 seconds to wake.*
+
+## Overview
 
 This API acts as an idempotency layer for payment processing, ensuring that duplicate requests (caused by network timeouts, retries, or race conditions) are handled safely without charging customers multiple times. Built for **FinSafe Transactions Ltd.**, a payment processor requiring robust duplicate detection.
 
-Architecture
+## Architecture
 
 ![System Architecture](./architecture-diagram.png)
 
-*The diagram shows the layered architecture with request flow from client through validation, idempotency checking, concurrent request coalescing, to payment processing and response caching.*
+*Component view: the layered architecture showing how the pieces fit together.*
 
-Request FLow
+### Key Components
+
+- **Flask Application** — Main application entry point that registers routes and documentation
+- **Routing Layer** — Defines API endpoints (`/health` and `/process-payment`)
+- **Middleware Layer** — Two-stage processing:
+  1. **Validation Middleware** — Validates request body before processing
+  2. **Idempotency Middleware** — Handles duplicate detection and request coalescing
+- **Support Layer** — Utilities for request hashing and response replay, plus schema validation
+- **Backend Layer** — Payment controller that simulates payment processing
+- **Idempotency Store** — In-memory storage with TTL, request coalescing, and background cleanup
+
+## Request Flow
+
+The logic-flow view of what happens for every incoming request:
 
 ```mermaid
 flowchart TD
@@ -26,12 +47,10 @@ flowchart TD
     KeyValid -- No --> E4["400 - Invalid key format"]
     KeyValid -- Yes --> Build["Build composite key<br/>method:path:key<br/>+ hash request body"]
     Build --> Exists{"Record exists in store?"}
-
     Exists -- No --> New["Store record + mark in-flight"]
     New --> Process["Process payment ~2s"]
     Process --> Cache["Cache response + release waiters"]
     Cache --> OK["200 - Charged 100 GHS"]
-
     Exists -- Yes --> SameHash{"Same request hash?"}
     SameHash -- No --> E422["422 - Key already used for a different body"]
     SameHash -- Yes --> Cached{"Response already cached?"}
@@ -42,7 +61,9 @@ flowchart TD
     Done -- No --> E500["500 - Could not be replayed"]
 ```
 
-In-flight Coalescing (Sequence)
+## In-Flight Coalescing (Sequence)
+
+How two concurrent requests with the same idempotency key are handled — the second request waits on the first instead of triggering a second charge:
 
 ```mermaid
 sequenceDiagram
@@ -50,7 +71,6 @@ sequenceDiagram
     participant GW as Gateway
     participant S as Store
     participant B as Request B
-
     A->>GW: POST /process-payment (Key K)
     GW->>S: get(K) -> not found
     GW->>S: set(K, pending) + begin(K)
@@ -66,63 +86,52 @@ sequenceDiagram
     GW-->>B: 200 replayed (X-Cache-Hit: true)
 ```
 
-Key Components
+## Features
 
-- **Flask Application** - Main application entry point that registers routes and documentation
-- **Routing Layer** - Defines API endpoints (`/health` and `/process-payment`)
-- **Middleware Layer** - Two-stage processing:
-  1. **Validation Middleware** - Validates request body before processing
-  2. **Idempotency Middleware** - Handles duplicate detection and request coalescing
-- **Support Layer** - Utilities for request hashing and response replay, plus schema validation
-- **Backend Layer** - Payment controller that simulates payment processing
-- **Idempotency Store** - In-memory storage with TTL, request coalescing, and background cleanup
+### Core Functionality
+- **Idempotency Support** — Prevents duplicate payment processing using unique request keys
+- **Request Validation** — Comprehensive validation of payment data (amounts, currencies)
+- **Race Condition Handling** — Concurrent request coalescing for in-flight duplicates
+- **Cache Hit Tracking** — `X-Cache-Hit` header to identify replayed responses
 
-Features
+### Additional Features
+- **OpenAPI/Swagger Documentation** — Interactive API docs at `/docs`
+- **Health Check Endpoint** — Load balancer and monitoring support at `/health`
+- **Request Body Hashing** — Detects attempts to reuse keys for different requests
+- **Detailed Error Messages** — Clear validation feedback for debugging
 
-Core Functionality
-- **Idempotency Support** - Prevents duplicate payment processing using unique request keys
-- **Request Validation** - Comprehensive validation of payment data (amounts, currencies)
-- **Race Condition Handling** - Concurrent request coalescing for in-flight duplicates
-- **Cache Hit Tracking** - `X-Cache-Hit` header to identify replayed responses
+## Quick Start
 
-Additional Features
-- **OpenAPI/Swagger Documentation** - Interactive API docs at `/docs`
-- **Health Check Endpoint** - Load balancer and monitoring support at `/health`
-- **Request Body Hashing** - Detects attempts to reuse keys for different requests
-- **Detailed Error Messages** - Clear validation feedback for debugging
-
-Quick Start
-
-Prerequisites
+### Prerequisites
 - Python 3.11+
 - pip (Python package manager)
 
-Development Setup
+### Development Setup
 
 1. **Clone the repository**
-```bash
-git clone https://github.com/YanisAfari/Idempotency-Gateway.git
-cd Idempotency-Gateway
-```
+   ```bash
+   git clone https://github.com/YanisAfari/Idempotency-Gateway.git
+   cd Idempotency-Gateway
+   ```
 
 2. **Install dependencies**
-```bash
-pip install -r requirements.txt
-```
+   ```bash
+   pip install -r requirements.txt
+   ```
 
 3. **Run the development server**
-```bash
-python -m src.index
-```
+   ```bash
+   python -m src.index
+   ```
 
-The server will start on `http://localhost:3000`
+   The server will start on `http://localhost:3000`.
 
 4. **View API documentation**
-```
-http://localhost:3000/docs
-```
+   ```
+   http://localhost:3000/docs
+   ```
 
-Production Setup
+### Production Setup
 
 **Using Gunicorn (Linux/Mac/Production):**
 ```bash
@@ -134,16 +143,17 @@ gunicorn --config gunicorn.conf.py src.app:app
 waitress-serve --host=0.0.0.0 --port=3000 src.app:app
 ```
 
-API Documentation
+## API Documentation
 
-Base URL
+### Base URL
 ```
 http://localhost:3000
 ```
 
-Endpoints
+### Endpoints
 
-1. Health Check
+#### 1. Health Check
+
 **GET** `/health`
 
 Check if the service is running.
@@ -162,14 +172,15 @@ curl http://localhost:3000/health
 
 ---
 
-2. Process Payment
+#### 2. Process Payment
+
 **POST** `/process-payment`
 
 Process a payment with idempotency support.
 
 **Headers:**
 - `Content-Type: application/json` (required)
-- `Idempotency-Key: <unique-key>` (required, 16-64 characters)
+- `Idempotency-Key: <uuid>` (required, must be a valid UUID)
 
 **Request Body:**
 ```json
@@ -213,32 +224,36 @@ curl -X POST http://localhost:3000/process-payment \
 
 **Validation Errors (400 Bad Request):**
 
-*Invalid amount (string):*
+*Invalid amount or currency:*
 ```json
 {
-  "error": {
+  "message": "Validation failed",
+  "errors": {
     "amount": ["Amount must be a number"]
   }
 }
 ```
 
-*Invalid currency:*
+*Missing Idempotency-Key header:*
 ```json
 {
-  "error": {
-    "currency": ["Invalid ISO 4217 currency code"]
-  }
+  "error": "Missing idempotency key",
+  "message": "The Idempotency-Key header is required for POST requests"
 }
 ```
 
-*Missing Idempotency-Key:*
+*Invalid Idempotency-Key format (not a UUID):*
 ```json
 {
-  "error": "Idempotency-Key header is required"
+  "error": "Invalid idempotency key format",
+  "message": "Key must be 16-64 alphanumeric characters, hyphens, or underscores"
 }
 ```
 
-Supported Currencies
+> Note: the runtime check accepts only valid UUIDs (per the OpenAPI spec at `/docs`); the current error message text is more permissive than the rule it enforces.
+
+### Supported Currencies
+
 Any valid ISO 4217 currency code:
 - `GHS` (Ghanaian Cedi)
 - `USD` (US Dollar)
@@ -247,7 +262,8 @@ Any valid ISO 4217 currency code:
 - `NGN` (Nigerian Naira)
 - And 150+ others
 
-Amount Validation Rules
+### Amount Validation Rules
+
 - Must be a number (not a string)
 - Must be positive (> 0)
 - Maximum 2 decimal places
@@ -255,14 +271,14 @@ Amount Validation Rules
   - Valid: `100`, `100.5`, `100.50`
   - Invalid: `"100.50"` (string), `100.505` (3 decimals), `-50` (negative)
 
-Testing
+## Testing
 
-Run All Tests
+### Run All Tests
 ```bash
 pytest src/tests/ -v
 ```
 
-Run Specific User Stories
+### Run Specific User Stories
 ```bash
 # User Story 1: Happy Path
 pytest src/tests/user_stories/test_happy_path.py -v
@@ -271,30 +287,35 @@ pytest src/tests/user_stories/test_happy_path.py -v
 pytest src/tests/user_stories/test_idempotency_behavior.py -v
 ```
 
-Expected Test Results
+### Expected Test Results
 ```
 test_user_story_1_processes_first_transaction_with_expected_response PASSED
 test_user_story_2_duplicate_request_returns_cached_response_without_reprocessing PASSED
 test_user_story_3_same_key_with_different_payload_is_rejected PASSED
 test_bonus_in_flight_duplicate_waits_and_reuses_original_response PASSED
+test_expired_idempotency_key_is_removed_on_access PASSED
+test_validated_body_reaches_controller PASSED
+test_failed_first_attempt_releases_key_for_retry PASSED
 ```
 
-Manual Testing with Thunder Client or Postman
+### Manual Testing with Thunder Client or Postman
 
 **Test Idempotency:**
-1. Send a payment request with `Idempotency-Key: test-001`
+1. Send a payment request with `Idempotency-Key: 11111111-1111-4111-8111-111111111111`
 2. Send the SAME request again
 3. Observe: Second request is instant and has `X-Cache-Hit: true` header
 
 **Test Conflict Detection:**
-1. Send request with `Idempotency-Key: test-002`, amount: `100`
+1. Send request with `Idempotency-Key: 22222222-2222-4222-8222-222222222222`, amount: `100`
 2. Send request with SAME key but amount: `500`
 3. Observe: Second request returns `422` error
 
-Design Decisions
+## Design Decisions
 
-1. In-Memory Idempotency Store
-**Decision:** Use Python dictionary for idempotency cache  
+### 1. In-Memory Idempotency Store
+
+**Decision:** Use Python dictionary for idempotency cache.
+
 **Rationale:**
 - Simple, fast, and sufficient for demonstration
 - No external dependencies (Redis, database)
@@ -306,10 +327,12 @@ Design Decisions
 - Not shared across multiple server instances
 - Data lost on server restart
 
-**Production Alternative:** Redis with 24-hour TTL on keys
+**Production Alternative:** Redis with the same TTL semantics, for shared state across instances.
 
-2. Request Body Hashing
-**Decision:** Hash request body to detect payload changes  
+### 2. Request Body Hashing
+
+**Decision:** Hash request body to detect payload changes.
+
 **Rationale:**
 - Prevents malicious reuse of idempotency keys
 - Protects against accidental amount/currency changes
@@ -322,15 +345,19 @@ request_hash = hashlib.sha256(
 ).hexdigest()
 ```
 
-3. Single Worker Configuration
-**Decision:** Gunicorn configured with 1 worker, 4 threads  
+### 3. Single Worker Configuration
+
+**Decision:** Gunicorn configured with 1 worker, 4 threads.
+
 **Rationale:**
 - In-memory store is not shared across processes
 - Threads share memory within a process (idempotency works correctly)
-- For production: Use Redis and increase workers to 4-8
+- For production: use Redis and increase workers to 4–8
 
-4. Middleware Architecture
-**Decision:** Separate validation and idempotency into middleware layers  
+### 4. Middleware Architecture
+
+**Decision:** Separate validation and idempotency into middleware layers.
+
 **Rationale:**
 - Separation of concerns (validation ≠ idempotency)
 - Reusable and testable components
@@ -341,24 +368,41 @@ request_hash = hashlib.sha256(
 Request → Validation Middleware → Idempotency Middleware → Controller → Response
 ```
 
-5. Swagger/OpenAPI Documentation
-**Decision:** Auto-generate API documentation  
+### 5. Swagger/OpenAPI Documentation
+
+**Decision:** Auto-generate API documentation.
+
 **Rationale:**
 - Reduces integration time for clients
 - Self-documenting API
 - Try-it-out functionality for testing
 
-Developer's Choice: Request Validation Framework
+### 6. TTL & Background Cleanup
 
-The Problem I Identified
+**Decision:** Idempotency records expire automatically with a default TTL of 24 hours, combining lazy expiry on access with a periodic background sweep.
 
-In production payment systems, **invalid data is the #1 cause of processing failures**. Without comprehensive validation:
+**Rationale:**
+- Prevents unbounded memory growth in a long-running process
+- Aligns idempotency retention with realistic client retry windows
+- Reduces exposure from long-lived cached payment responses
+- Lazy expiry handles stragglers on read; the sweep keeps the store bounded even if certain keys are never accessed again
+
+**Implementation:**
+- Lazy expiry on `get()` — expired records are removed when accessed
+- Background daemon thread sweeps the store on a fixed interval
+- TTL is configurable per store instance (default: 24h)
+
+## Developer's Choice: Request Validation Framework
+
+### The Problem I Identified
+
+In production payment systems, invalid input data is a leading cause of processing failures. Without comprehensive validation:
 - Downstream systems receive malformed data
 - Payment processors return cryptic errors
 - Customer experience degrades
-- Support tickets increase by 60%+
+- Support load grows
 
-Real-world scenario:
+**Real-world scenario:**
 ```javascript
 // Client sends this (wrong type)
 {"amount": "100.50", "currency": "GHS"}
@@ -367,10 +411,10 @@ Real-world scenario:
 Error: Cannot multiply string by decimal
 
 // With validation → immediate feedback
-{"error": {"amount": ["Amount must be a number"]}}
+{"message": "Validation failed", "errors": {"amount": ["Amount must be a number"]}}
 ```
 
-What I Implemented
+### What I Implemented
 
 A comprehensive validation framework using **Marshmallow** that validates:
 
@@ -384,13 +428,13 @@ A comprehensive validation framework using **Marshmallow** that validates:
 
 3. **Business Rules**
    - Amount must be positive
-   - Currency must be valid ISO 4217 code (USD, GHS, EUR, etc.)
+   - Currency must be a valid ISO 4217 code (USD, GHS, EUR, etc.)
 
 4. **Early Rejection**
-   - Invalid requests rejected before reaching idempotency layer
+   - Invalid requests rejected before reaching the idempotency layer
    - Saves computation and prevents cache pollution
 
-Implementation Details
+### Implementation Details
 
 **Schema Definition:**
 ```python
@@ -406,7 +450,7 @@ class RequestSchema(Schema):
             raise ValidationError("Amount must be a number")
         if not isinstance(value, (int, float)):
             raise ValidationError("Amount must be a number")
-        
+
         decimal_value = Decimal(str(value))
         if decimal_value < 0:
             raise ValidationError("Amount must be positive")
@@ -422,34 +466,33 @@ class RequestSchema(Schema):
 **Middleware Integration:**
 ```python
 @router.route("/process-payment", methods=["POST"])
-@validate_schema(request_schema)  # ← Validation runs first
+@validate_schema(request_schema)      # ← Validation runs first
 @idempotency_middleware()
 def handle_process_payment():
     return process_payment()
 ```
 
-Why This Matters for Production
+### Why This Matters for Production
 
-**Impact Metrics:**
-- ✅ **80% reduction** in payment processing errors
-- ✅ **60% reduction** in support tickets
-- **50% faster** error diagnosis (clear validation messages)
-- **Zero** database round-trips for invalid data
+**Operational benefits:**
+- Bad requests are rejected in sub-millisecond time, before they reach the payment processor or pollute the idempotency cache
+- Clear, structured error messages shorten integration and debugging cycles for client teams
+- Downstream systems only ever see well-formed payloads, removing a whole class of error-handling complexity from the payment processor
 
-**Cost Savings:**
-- Invalid requests rejected in <1ms (vs 2+ seconds if they reach processor)
-- Prevents wasted computation on obviously invalid data
-- Reduces load on downstream payment systems
+**Cost & reliability:**
+- Invalid requests are rejected in well under 1 ms versus the ~2 s a full payment cycle would take
+- Idempotency entries are only ever created for *valid* requests, so retries of bad input never lock out a key
+- Load on downstream payment systems is reduced because they no longer need to filter out obvious input errors
 
-**Developer Experience:**
+**Developer experience:**
 ```bash
 # Before validation framework
 curl ... -d '{"amount": "100"}'
 → 500 Internal Server Error: Cannot process string amount
 
-# After validation framework  
+# After validation framework
 curl ... -d '{"amount": "100"}'
-→ 400 Bad Request: {"error": {"amount": ["Amount must be a number"]}}
+→ 400 Bad Request: {"message": "Validation failed", "errors": {"amount": ["Amount must be a number"]}}
 ```
 
 **Compliance:**
@@ -457,35 +500,23 @@ curl ... -d '{"amount": "100"}'
 - Decimal precision prevents rounding errors (critical for accounting)
 - Audit trail of rejected requests
 
-Alternative Approaches Considered
+### Alternative Approaches Considered
 
-1. **No Validation** ❌
-   - Let payment processor handle it
-   - Problem: Slower feedback, wasted processing, poor UX
+1. **No Validation** ❌ — Let payment processor handle it. *Problem: slower feedback, wasted processing, poor UX.*
+2. **Lightweight Validation** ❌ — Just check if fields exist. *Problem: type errors and business rule violations still reach the processor.*
+3. **Database Constraints** ❌ — Enforce at database level. *Problem: too late — idempotency already cached the invalid request.*
+4. **Comprehensive Schema Validation** ✅ — **Chosen.** Validate early, validate completely, with clear error messages, preventing cascade failures.
 
-2. **Lightweight Validation** ❌
-   - Just check if fields exist
-   - Problem: Type errors and business rule violations still reach processor
+## Deployment
 
-3. **Database Constraints** ❌
-   - Enforce at database level
-   - Problem: Too late - idempotency already cached invalid request
-
-4. **Comprehensive Schema Validation** ✅ ← **Chosen**
-   - Validate early, validate completely
-   - Clear error messages
-   - Prevents cascade failures
-
-Deployment
-
-Deploy to Render
+### Deploy to Render
 
 1. **Push to GitHub**
-```bash
-git add .
-git commit -m "Add production configuration and documentation"
-git push origin main
-```
+   ```bash
+   git add .
+   git commit -m "Add production configuration and documentation"
+   git push origin main
+   ```
 
 2. **Create Render Web Service**
    - Go to https://render.com
@@ -498,18 +529,18 @@ git push origin main
    - **Environment:** Python 3
 
 4. **Deploy**
-   - Render will auto-deploy on every push to `main`
+   - Render will auto-deploy on every push to `main`.
 
-Environment Variables (if needed)
+### Environment Variables (if needed)
 ```
 PORT=3000  # Automatically set by Render
 ```
 
-Security Considerations
+## Security Considerations
 
 1. **Idempotency Key Validation**
-   - Must be 16-64 characters
-   - Prevents brute-force key guessing
+   - Must be a valid UUID
+   - Rejects malformed or guessable keys early
 
 2. **Request Body Hashing**
    - SHA-256 hash prevents payload tampering
@@ -519,14 +550,14 @@ Security Considerations
    - Payment amounts logged, but no card numbers or PII
    - Idempotency keys are UUIDs (no user information)
 
-Performance
+## Performance
 
 - **First Request:** ~2 seconds (simulated payment processing)
-- **Duplicate Request:** <10ms (cached response)
-- **Validation:** <1ms (rejected before processing)
+- **Duplicate Request:** <10 ms (cached response)
+- **Validation:** <1 ms (rejected before processing)
 - **Concurrent Requests:** Coalesced (no duplicate processing)
 
-Technology Stack
+## Technology Stack
 
 - **Framework:** Flask 3.0
 - **Validation:** Marshmallow 3.20
@@ -535,15 +566,15 @@ Technology Stack
 - **API Documentation:** Swagger UI 4.11
 - **Testing:** pytest 8.0
 
-License
+## License
 
-MIT License - See LICENSE file for details
+MIT License — see the `LICENSE` file for details.
 
-Author
+## Author
 
-**Yanis Afari**  
+**Yanis Afari**
 GitHub: [@YanisAfari](https://github.com/YanisAfari)
 
-Acknowledgments
+## Acknowledgments
 
 Built as part of the Idempotency Gateway Challenge for demonstrating production-ready API design, idempotency patterns, and request validation in payment systems.

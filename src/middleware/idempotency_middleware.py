@@ -1,7 +1,7 @@
 from functools import wraps
 from ..schema import is_valid_uuid
 
-from flask import request
+from flask import request, g
 
 from ..store.idempotency_store import idempotency_store
 from ..utils import hash_request, replay_cached_response
@@ -39,8 +39,10 @@ def idempotency_middleware():
                 }), 400
 
             composite_key = f"{request.method}:{request.path}:{key_header}"
-            # Ensure we pass a dict to hash_request; get_json may return None
-            request_body = request.get_json(silent=True) or {}
+            # Hash the *validated* body so semantic duplicates (e.g. "ghs" vs
+            # "GHS", 100 vs 100.0) collapse to the same hash. Falls back to
+            # the raw JSON if validation didn't populate g (defensive only).
+            request_body = getattr(g, "validated_body", None) or request.get_json(silent=True) or {}
             request_hash = hash_request(request_body)
 
             existing = idempotency_store.get(composite_key)
@@ -104,6 +106,12 @@ def idempotency_middleware():
                 return response
 
             except Exception:
+                # The handler failed before producing a response. Delete the
+                # response-less record so a retry with the same idempotency
+                # key can re-attempt the operation, rather than being locked
+                # out for the full TTL window. ``complete()`` still releases
+                # any waiters (they'll see no record and proceed normally).
+                idempotency_store.delete(composite_key)
                 idempotency_store.complete(composite_key)
                 raise
 

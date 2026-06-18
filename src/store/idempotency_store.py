@@ -98,6 +98,17 @@ class InMemoryIdempotencyStore:
         for event in events:
             event.set()
 
+    def delete(self, key: str) -> None:
+        """
+        Remove a single record from the store (no-op if absent).
+
+        Used to evict response-less records left behind by a failed first
+        attempt, so a subsequent retry with the same idempotency key can
+        re-attempt the operation instead of being locked out until TTL.
+        """
+        with self._lock:
+            self._records.pop(key, None)
+
     def stop(self) -> None:
         self._shutdown.set()
         self._cleanup_thread.join(timeout=1)

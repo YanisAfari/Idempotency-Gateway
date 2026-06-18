@@ -115,13 +115,86 @@ def test_bonus_in_flight_duplicate_waits_and_reuses_original_response():
     assert elapsed_ms < 4500, f"Expected no double processing delay, got {elapsed_ms:.0f}ms"
 
 
-def test_expired_idempotency_key_is_removed_on_access():
-    """Expired idempotency key is removed on access (TTL)"""
-    idempotency_store.set("expired-key", {
-        "requestHash": "hash",
-        "createdAt": datetime.now(timezone.utc) - timedelta(hours=25),
-    })
+def test_expired_idempotency_key_is_removed_on_access(monkeypatch):
+    """Expired idempotency key is removed on access (TTL).
+
+    The store uses ``time.monotonic()`` as its clock (immune to wall-clock
+    jumps), so we simulate the passage of 25 hours by patching ``monotonic``
+    inside the store module — directly injecting a 25-hour-old datetime into
+    the record wouldn't work, because the store stamps its own monotonic
+    time at write time.
+    """
+    from src.store import idempotency_store as store_module
+
+    idempotency_store.set("expired-key", {"requestHash": "hash"})
+
+    # Advance the store's clock by 25 hours (TTL is 24h)
+    fake_now = time.monotonic() + (25 * 60 * 60)
+    monkeypatch.setattr(store_module.time, "monotonic", lambda: fake_now)
 
     expired = idempotency_store.get("expired-key")
     assert expired is None
     assert idempotency_store.get("expired-key") is None
+
+
+def test_validated_body_reaches_controller(client):
+    """The controller receives the *normalized* body (uppercased currency)
+    from the validation middleware, not the raw JSON."""
+    key = str(uuid.uuid4())
+
+    response = client.post(
+        "/process-payment",
+        json={"amount": 100, "currency": "ghs"},  # lowercase on the wire
+        headers={"Idempotency-Key": key},
+    )
+
+    assert response.status_code == 200
+    # If the validated body reaches the controller, the currency is uppercased.
+    assert response.get_json()["message"] == "Charged 100 GHS"
+
+
+def test_failed_first_attempt_releases_key_for_retry(client, monkeypatch):
+    """If the first request raises, the response-less record is evicted so
+    a retry with the same key can proceed, instead of being locked out."""
+    from src import controller
+
+    key = str(uuid.uuid4())
+    payload = {"amount": 100, "currency": "GHS"}
+
+    # First attempt: force the controller to blow up after the store record
+    # has been created (simulating a transient downstream failure).
+    original = controller.process_payment
+    call_count = {"n": 0}
+
+    def flaky_process_payment():
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("simulated downstream failure")
+        return original()
+
+    monkeypatch.setattr(controller, "process_payment", flaky_process_payment)
+
+    # First request should bubble the error up (500 from Flask's default
+    # error handler is fine; we just need it to fail).
+    try:
+        client.post(
+            "/process-payment",
+            json=payload,
+            headers={"Idempotency-Key": key},
+        )
+    except RuntimeError:
+        pass  # the error may propagate in test client depending on config
+
+    # Second request with the SAME key + body should now succeed, because
+    # the poisoned record was evicted on the first attempt's exception.
+    second = client.post(
+        "/process-payment",
+        json=payload,
+        headers={"Idempotency-Key": key},
+    )
+
+    assert second.status_code == 200, (
+        f"Retry was locked out by a stale poisoned record: got {second.status_code} "
+        f"with body {second.get_json()}"
+    )
+    assert second.get_json()["message"] == "Charged 100 GHS"
